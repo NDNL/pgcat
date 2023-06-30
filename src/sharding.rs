@@ -1,4 +1,3 @@
-use itertools::Either;
 use serde_derive::{Deserialize, Serialize};
 /// Implements various sharding functions.
 use sha1::{Digest, Sha1};
@@ -13,8 +12,6 @@ pub enum ShardingFunction {
     PgBigintHash,
     #[serde(alias = "sha1", alias = "Sha1")]
     Sha1,
-    #[serde(alias = "array", alias = "Array")]
-    Array,
 }
 
 impl ToString for ShardingFunction {
@@ -22,7 +19,6 @@ impl ToString for ShardingFunction {
         match *self {
             ShardingFunction::PgBigintHash => "pg_bigint_hash".to_string(),
             ShardingFunction::Sha1 => "sha1".to_string(),
-            ShardingFunction::Array => "array".to_string(),
         }
     }
 }
@@ -36,6 +32,33 @@ pub struct Sharder {
     sharding_function: ShardingFunction,
 }
 
+pub struct VecSharder {
+    shards: Vec<String>,
+}
+
+impl VecSharder {
+    pub fn new(shards: Vec<String>) -> VecSharder {
+        VecSharder { shards }
+    }
+
+    pub fn shards(&self, key: Vec<String>) -> Vec<usize> {
+        self.arr(key)
+    }
+
+    fn arr(&self, keys: Vec<String>) -> Vec<usize> {
+        keys.iter()
+            .enumerate()
+            .filter_map(|(i, k)| {
+                if self.shards.contains(k) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
 impl Sharder {
     /// Create new instance of the sharder.
     pub fn new(shards: usize, sharding_function: ShardingFunction) -> Sharder {
@@ -46,11 +69,10 @@ impl Sharder {
     }
 
     /// Compute the shard given sharding key.
-    pub fn shard(&self, key: Either<i64, Vec<String>>) -> usize {
+    pub fn shard(&self, key: i64) -> usize {
         match self.sharding_function {
             ShardingFunction::PgBigintHash => self.pg_bigint_hash(key),
             ShardingFunction::Sha1 => self.sha1(key),
-            ShardingFunction::Array => self.sha1(key),
         }
     }
 

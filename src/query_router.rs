@@ -17,7 +17,7 @@ use crate::errors::Error;
 use crate::messages::BytesMutReader;
 use crate::plugins::{Intercept, Plugin, PluginOutput, QueryLogger, TableAccess};
 use crate::pool::PoolSettings;
-use crate::sharding::Sharder;
+use crate::sharding::{Sharder, VecSharder};
 
 use std::cmp;
 use std::collections::BTreeSet;
@@ -69,7 +69,7 @@ static CUSTOM_SQL_REGEX_LIST: OnceCell<Vec<Regex>> = OnceCell::new();
 /// The query router.
 pub struct QueryRouter {
     /// Which shard we should be talking to right now.
-    active_shard: Option<usize>,
+    active_shard: Option<BTreeSet<usize>>,
 
     /// Which server should we be talking to.
     active_role: Option<Role>,
@@ -274,9 +274,16 @@ impl QueryRouter {
             }
 
             Command::SetShard => {
+                let mut shard_set = BTreeSet::new();
                 self.active_shard = match value.to_ascii_uppercase().as_ref() {
-                    "ANY" => Some(rand::random::<usize>() % self.pool_settings.shards),
-                    _ => Some(value.parse::<usize>().unwrap()),
+                    "ANY" => {
+                        shard_set.insert(rand::random::<usize>() % self.pool_settings.shards);
+                        Some(shard_set)
+                    }
+                    _ => {
+                        shard_set.insert(value.parse::<usize>().unwrap());
+                        Some(shard_set)
+                    }
                 };
             }
 
@@ -677,15 +684,17 @@ impl QueryRouter {
     }
 
     /// Try to figure out which shard the query should go to.
-    fn infer_shard(&mut self, query: &sqlparser::ast::Query) -> Option<usize> {
+    fn infer_shard(&mut self, query: &sqlparser::ast::Query) -> Option<BTreeSet<usize>> {
         let mut shards = BTreeSet::new();
         let mut exprs = Vec::new();
 
         match &*query.body {
             SetExpr::Query(query) => {
                 match self.infer_shard(&*query) {
-                    Some(shard) => {
-                        shards.insert(shard);
+                    Some(shard_arr) => {
+                        for shard in shard_arr.iter() {
+                            shards.insert(*shard);
+                        }
                     }
                     None => (),
                 };
@@ -779,13 +788,7 @@ impl QueryRouter {
                 None
             }
 
-            1 => Some(shards.into_iter().last().unwrap()),
-
-            // TODO: support querying multiple shards (some day...)
-            _ => {
-                debug!("More than one sharding key found");
-                None
-            }
+            _ => Some(shards),
         }
     }
 
@@ -835,7 +838,7 @@ impl QueryRouter {
         Ok(PluginOutput::Allow)
     }
 
-    fn set_sharding_key(&mut self, sharding_key: i64) -> Option<usize> {
+    fn set_sharding_key(&mut self, sharding_key: i64) -> Option<BTreeSet<usize>> {
         let sharder = Sharder::new(
             self.pool_settings.shards,
             self.pool_settings.sharding_function,
@@ -851,11 +854,11 @@ impl QueryRouter {
     }
 
     /// Get desired shard we should be talking to.
-    pub fn shard(&self) -> usize {
-        self.active_shard.unwrap_or(0)
+    pub fn shard(&self) -> BTreeSet<usize> {
+        self.active_shard.unwrap_or_default()
     }
 
-    pub fn set_shard(&mut self, shard: usize) {
+    pub fn set_shard(&mut self, shard: BTreeSet<usize>) {
         self.active_shard = Some(shard);
     }
 
